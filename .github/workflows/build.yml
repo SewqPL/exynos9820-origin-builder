@@ -51,15 +51,15 @@ on:
         description: "SuSFS: intree = 9820_kernel built-in SuSFS; v2.4.0 = apply JackA1ltman 4.14 patch"
         type: choice
         options: [intree, v2.4.0]
-        default: intree
+        default: v2.4.0
       extra_features:
         description: "Add Baseband Guard + NoMount + Droidspaces"
         type: boolean
-        default: false
+        default: true
       kpm:
         description: "Enable CONFIG_KPM"
         type: boolean
-        default: false
+        default: true
       publish:
         description: "Publish a GitHub Release"
         type: boolean
