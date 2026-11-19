@@ -1,73 +1,102 @@
-name: Build Exynos 9820 Kernels (9820_kernel base) with OriginSU
+name: Build Kernel
 
 on:
-  schedule:
-    - cron: "43 4 * * 0" # Sunday 04:43 UTC
   workflow_dispatch:
     inputs:
-      originsu_ref:
-        description: "OriginSU tag to build (empty = latest release)"
-        required: false
-        default: ""
-      kernel_branch:
-        description: "Kernel branch (SewqPL/9820_kernel)"
-        required: false
-        default: "susfsksu"
-      device:
-        description: "Device to build (all = every device)"
+      model:
+        description: Model (code + device name)
+        required: true
+        default: beyond1lte (Galaxy S10)
         type: choice
         options:
-          - all
-          - beyond0lte
-          - beyond0lteks
-          - beyond1lte
-          - beyond1lteks
-          - beyond2lte
-          - beyond2lteks
-          - beyondx
-          - beyondxks
-          - d1
-          - d1xks
-          - d2s
-          - d2x
-          - d2xks
-        default: all
-      gpu_max:
-        description: "GPU max MHz (OC tables, default: 962)"
-        type: choice
-        options: ["100", "156", "200", "260", "325", "377", "433", "572", "598", "650", "676", "702", "754", "806", "858", "910", "962", "1014", "1066", "1092", "1118", "1144"]
-        default: "962"
+          - beyond0lte (Galaxy S10e)
+          - beyond0lteks (Galaxy S10e Korea)
+          - beyond1lte (Galaxy S10)
+          - beyond1lteks (Galaxy S10 Korea)
+          - beyond2lte (Galaxy S10+)
+          - beyond2lteks (Galaxy S10+ Korea)
+          - beyondx (Galaxy S10 5G)
+          - beyondxks (Galaxy S10 5G Korea)
+          - d1 (Galaxy Note10)
+          - d1xks (Galaxy Note10 5G)
+          - d2s (Galaxy Note10+)
+          - d2x (Galaxy Note10+ 5G)
+          - d2xks (Galaxy Note10+ 5G Korea)
       root:
-        description: "originsu = OriginSU; rksu = 9820_kernel native RKSU (control build)"
-        type: choice
-        options: [originsu, rksu]
+        description: Root implementation
+        required: true
         default: originsu
+        type: choice
+        options:
+          - originsu
+          - rksu
+          - none
+      originsu_ref:
+        description: "OriginSU tag (only for originsu; empty = latest release)"
+        required: false
+        default: ""
       hook_mode:
-        description: "susfs = root + SuSFS; manual = root only, SuSFS disabled"
-        type: choice
-        options: [susfs, manual]
+        description: "Hook mode (susfs = root + SuSFS, manual = manual hooks only)"
+        required: true
         default: susfs
-      susfs_version:
-        description: "SuSFS: intree = 9820_kernel built-in SuSFS; v2.4.0 = apply JackA1ltman 4.14 patch"
         type: choice
-        options: [intree, v2.4.0]
-        default: v2.4.0
-      extra_features:
-        description: "Add Baseband Guard + NoMount + Droidspaces"
-        type: boolean
-        default: true
+        options:
+          - susfs
+          - manual
+      susfs_version:
+        description: "SuSFS version (intree = 9820_kernel built-in, v2.4.0 = apply JackA1ltman patch)"
+        required: true
+        default: intree
+        type: choice
+        options:
+          - intree
+          - v2.4.0
       kpm:
-        description: "Enable CONFIG_KPM"
-        type: boolean
-        default: true
-      publish:
-        description: "Publish a GitHub Release"
-        type: boolean
+        description: Enable CONFIG_KPM (OriginSU)
+        required: false
         default: false
-
-concurrency:
-  group: kernel-build
-  cancel-in-progress: false
+        type: boolean
+      extra_features:
+        description: Add Baseband Guard + NoMount + Droidspaces
+        required: false
+        default: false
+        type: boolean
+      recovery:
+        description: Compile for Android Recovery (disables root)
+        required: true
+        default: n
+        type: choice
+        options:
+          - n
+          - y
+      gpu_max:
+        description: "GPU max MHz (for OC tables, default: 702)"
+        required: true
+        default: "962"
+        type: choice
+        options:
+          - "100"
+          - "156"
+          - "200"
+          - "260"
+          - "325"
+          - "377"
+          - "433"
+          - "572"
+          - "598"
+          - "650"
+          - "676"
+          - "702"
+          - "754"
+          - "806"
+          - "858"
+          - "910"
+          - "962"
+          - "1014"
+          - "1066"
+          - "1092"
+          - "1118"
+          - "1144"
 
 permissions:
   contents: read
@@ -76,361 +105,195 @@ defaults:
   run:
     shell: bash
 
-env:
-  KERNEL_REPO: SewqPL/9820_kernel
-  KERNEL_DIR: kernel
-  AK3_REPO: https://github.com/LeDrew2017/Anykernel
-  LLVM_VERSION: "21.1.8"
-  KBUILD_BUILD_USER: builder
-  KBUILD_BUILD_HOST: github-actions
-
 jobs:
-  # ------------------------------------------------------------------
-  # 1) Do we need to build? (new OriginSU version, with its manager APK)
-  # ------------------------------------------------------------------
-  check:
+  build:
     runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.ver.outputs.tag }}
-      build: ${{ steps.ver.outputs.build }}
-      branch: ${{ steps.ver.outputs.branch }}
-      devices: ${{ steps.ver.outputs.devices }}
+
     steps:
-      - name: Compare OriginSU latest release with our releases
-        id: ver
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Checkout origin-builder helper scripts
+        if: ${{ inputs.root == 'originsu' || inputs.extra_features }}
+        uses: actions/checkout@v4
+        with:
+          repository: SewqPL/exynos9820-origin-builder
+          path: _origin_builder
+
+      - name: Move helper scripts outside kernel workspace
+        if: ${{ inputs.root == 'originsu' || inputs.extra_features }}
+        run: |
+          mv _origin_builder "$RUNNER_TEMP/origin-builder"
+
+      - name: Resolve model and root settings
+        id: cfg
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          BRANCH="${{ inputs.kernel_branch }}"; BRANCH="${BRANCH:-susfsksu}"
-          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          MODEL_CODE="${{ inputs.model }}"
+          MODEL_CODE="${MODEL_CODE%% *}"
+          echo "model_code=$MODEL_CODE" >> "$GITHUB_OUTPUT"
 
-          DEV="${{ inputs.device }}"
-          if [ -z "$DEV" ] || [ "$DEV" = "all" ]; then
-            echo 'devices=["beyond0lte","beyond0lteks","beyond1lte","beyond1lteks","beyond2lte","beyond2lteks","beyondx","beyondxks","d1","d1xks","d2s","d2x","d2xks"]' >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.recovery }}" = "y" ] || [ "${{ inputs.root }}" = "none" ]; then
+            echo "include_ksu=n" >> "$GITHUB_OUTPUT"
+            echo "effective_root=none" >> "$GITHUB_OUTPUT"
           else
-            echo "devices=[\"$DEV\"]" >> "$GITHUB_OUTPUT"
+            echo "include_ksu=y" >> "$GITHUB_OUTPUT"
+            echo "effective_root=${{ inputs.root }}" >> "$GITHUB_OUTPUT"
           fi
 
-          TAG="${{ inputs.originsu_ref }}"
-          [ -n "$TAG" ] || TAG=$(gh release view --repo samakshkambxj/OriginSU --json tagName -q .tagName 2>/dev/null || true)
-          [ -n "$TAG" ] || { echo "::error::Could not determine the OriginSU version"; exit 1; }
-          echo "OriginSU version: $TAG"; echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
-          APKS=$(gh release view "$TAG" --repo samakshkambxj/OriginSU --json assets -q '.assets[].name' 2>/dev/null | grep -E '\.apk$' || true)
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "Manual run -> forced build"; echo "build=true" >> "$GITHUB_OUTPUT"
-          elif [ -z "$APKS" ]; then
-            echo "::warning::OriginSU release $TAG has no manager APK yet -> no build"; echo "build=false" >> "$GITHUB_OUTPUT"
-          elif gh release view "originsu-$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release originsu-$TAG already published -> nothing to do"; echo "build=false" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.root }}" = "originsu" ] && [ "${{ inputs.recovery }}" != "y" ]; then
+            TAG="${{ inputs.originsu_ref }}"
+            [ -n "$TAG" ] || TAG=$(gh release view --repo samakshkambxj/OriginSU --json tagName -q .tagName 2>/dev/null || true)
+            [ -n "$TAG" ] || { echo "::error::Could not determine OriginSU release tag"; exit 1; }
+            echo "originsu_tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "Resolved OriginSU tag: $TAG"
           else
-            echo "New version detected -> build"; echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "originsu_tag=na" >> "$GITHUB_OUTPUT"
           fi
 
-  # ------------------------------------------------------------------
-  # 2) Build (one job per device)
-  # ------------------------------------------------------------------
-  build:
-    needs: check
-    if: needs.check.outputs.build == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        device: ${{ fromJSON(needs.check.outputs.devices) }}
-    env:
-      DEVICE: ${{ matrix.device }}
-      ORIGINSU_TAG: ${{ needs.check.outputs.tag }}
-      KERNEL_BRANCH: ${{ needs.check.outputs.branch }}
-      GPU_MAX: ${{ github.event_name == 'workflow_dispatch' && inputs.gpu_max || '962' }}
-      ROOT: ${{ github.event_name == 'workflow_dispatch' && inputs.root || 'originsu' }}
-      HOOK_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.hook_mode || 'susfs' }}
-      SUSFS_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.susfs_version || 'intree' }}
-      EXTRA_FEATURES: ${{ github.event_name == 'workflow_dispatch' && inputs.extra_features || 'false' }}
-      KPM: ${{ github.event_name == 'workflow_dispatch' && inputs.kpm || 'false' }}
+          echo "Resolved model code: $MODEL_CODE"
 
-    steps:
-      - name: Checkout builder scripts
-        uses: actions/checkout@v4
-        with:
-          path: builder
-
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            bc bison build-essential cpio curl flex git-core \
-            libc6-dev-i386 lib32z1-dev libelf-dev libncurses-dev libssl-dev libxml2 \
-            python3 python-is-python3 rsync unzip wget xz-utils zip zlib1g-dev zstd
+            bc \
+            bison \
+            build-essential \
+            ccache \
+            clang \
+            cpio \
+            flex \
+            curl \
+            git-core \
+            zlib1g-dev \
+            libc6-dev-i386 \
+            lib32z1-dev \
+            libelf-dev \
+            libncurses-dev \
+            libssl-dev \
+            lld \
+            llvm \
+            python3 \
+            rsync \
+            unzip \
+            wget \
+            zip \
+            zstd
 
-      - name: Clone 9820_kernel (with submodules)
-        run: |
-          git clone --depth=1 -b "$KERNEL_BRANCH" --recurse-submodules --shallow-submodules \
-            "https://github.com/${KERNEL_REPO}.git" "$KERNEL_DIR"
-          echo "KERNEL_COMMIT=$(git -C "$KERNEL_DIR" rev-parse --short HEAD)" >> "$GITHUB_ENV"
-          [ -f "$KERNEL_DIR/build.sh" ] || { echo "::error::build.sh missing on $KERNEL_BRANCH"; exit 1; }
-          echo "-- SuSFS in tree: $(grep -m1 '#define SUSFS_VERSION' "$KERNEL_DIR/include/linux/susfs.h" 2>/dev/null || echo none)"
+      - name: Restore compiler cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ steps.cfg.outputs.model_code }}-${{ steps.cfg.outputs.effective_root }}-${{ inputs.hook_mode }}-${{ inputs.recovery }}-${{ inputs.gpu_max }}-${{ hashFiles('build.sh') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ steps.cfg.outputs.model_code }}-${{ steps.cfg.outputs.effective_root }}-
+            ccache-${{ runner.os }}-${{ steps.cfg.outputs.model_code }}-
 
-      - name: Download LLVM ${{ env.LLVM_VERSION }}
+      - name: Configure ccache
         run: |
-          F="LLVM-${LLVM_VERSION}-Linux-X64"
-          curl -fL --retry 5 --retry-all-errors -o /tmp/llvm.tar.xz \
-            "https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/${F}.tar.xz"
-          mkdir -p "$HOME/llvm" && tar -C "$HOME/llvm" --strip-components=1 -xf /tmp/llvm.tar.xz && rm -f /tmp/llvm.tar.xz
-          echo "$HOME/llvm/bin" >> "$GITHUB_PATH"
-          for t in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip; do
-            "$HOME/llvm/bin/$t" --version >/dev/null || { echo "::error::$t does not run"; ldd "$HOME/llvm/bin/$t" | grep 'not found'; exit 1; }
-          done
-          echo "TOOLCHAIN=$("$HOME/llvm/bin/clang" --version | head -n1)" >> "$GITHUB_ENV"
+          echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
+          echo "CCACHE_NOHASHDIR=1" >> "$GITHUB_ENV"
+          echo "CCACHE_SLOPPINESS=file_macro,locale,time_macros" >> "$GITHUB_ENV"
+          ccache --max-size=3G
+          ccache -s
 
-      - name: Kernel tweaks (no -dirty suffix + BBR fragment)
-        working-directory: ${{ env.KERNEL_DIR }}
+      - name: Setup Root (OriginSU / RKSU) and kernel config fragment
         run: |
+          rm -rf ./KernelSU ./KernelSU-Next ./drivers/KernelSU ./drivers/kernelsu
           sed -i "s/printf '%s' -dirty/:/g" scripts/setlocalversion 2>/dev/null || true
-          : > "$RUNNER_TEMP/builder.config"
-          cat >> "$RUNNER_TEMP/builder.config" <<'EOF'
-          CONFIG_TCP_CONG_BBR=y
-          CONFIG_DEFAULT_BBR=y
-          CONFIG_DEFAULT_TCP_CONG="bbr"
-          EOF
-          sed -i 's/^ *//' "$RUNNER_TEMP/builder.config"
-          echo "FRAG=$RUNNER_TEMP/builder.config" >> "$GITHUB_ENV"
 
-      - name: Setup Root (OriginSU or RKSU control)
-        working-directory: ${{ env.KERNEL_DIR }}
-        run: |
-          # Remove any pre-existing KSU directory (both lowercase and 9820_kernel's capitalized drivers/KernelSU)
-          rm -rf KernelSU-Next KernelSU drivers/kernelsu drivers/KernelSU
+          FRAG="$RUNNER_TEMP/extra.config"
+          : > "$FRAG"
 
-          if [ "$ROOT" = "rksu" ]; then
+          if [ "${{ steps.cfg.outputs.effective_root }}" = "rksu" ]; then
+            echo "Setting up RKSU (susfs-rksu-master)..."
             curl -LSs --fail --retry 3 \
               "https://raw.githubusercontent.com/cyberc3dr/KernelSU/susfs-rksu-master/kernel/setup.sh" \
               | bash -s susfs-rksu-master
-          else
-            if [ "$HOOK_MODE" = "susfs" ] && [ "$SUSFS_VERSION" = "v2.4.0" ]; then
-              bash "$GITHUB_WORKSPACE/builder/scripts/susfs_v2.4.sh" "$GITHUB_WORKSPACE/builder/scripts"
+
+          elif [ "${{ steps.cfg.outputs.effective_root }}" = "originsu" ]; then
+            ORIGINSU_TAG="${{ steps.cfg.outputs.originsu_tag }}"
+            echo "Setting up OriginSU ($ORIGINSU_TAG)..."
+
+            if [ "${{ inputs.hook_mode }}" = "susfs" ] && [ "${{ inputs.susfs_version }}" = "v2.4.0" ]; then
+              bash "$RUNNER_TEMP/origin-builder/scripts/susfs_v2.4.sh" "$RUNNER_TEMP/origin-builder/scripts"
             fi
 
             curl -LSs --fail --retry 3 \
               "https://raw.githubusercontent.com/samakshkambxj/OriginSU/main/kernel/setup.sh" \
               | bash -s "$ORIGINSU_TAG"
-            [ -e drivers/kernelsu/Kconfig ] || { echo "::error::drivers/kernelsu missing after setup.sh"; exit 1; }
+            [ -e drivers/kernelsu/Kconfig ] || { echo "::error::drivers/kernelsu missing after OriginSU setup.sh"; exit 1; }
             sed -i 's/\$(KSU_COMMIT_SHA)-dirty/$(KSU_COMMIT_SHA)/' KernelSU/kernel/Kbuild 2>/dev/null || true
 
-            bash "$GITHUB_WORKSPACE/builder/scripts/originsu_compat_4.14.sh"
-            bash "$GITHUB_WORKSPACE/builder/scripts/originsu_hooks_4.14.sh"
+            bash "$RUNNER_TEMP/origin-builder/scripts/originsu_compat_4.14.sh"
+            bash "$RUNNER_TEMP/origin-builder/scripts/originsu_hooks_4.14.sh"
+
+            # Prevent build.sh from overwriting OriginSU with cyberc3dr/KernelSU
+            sed -i '/cyberc3dr\/KernelSU/d' build.sh 2>/dev/null || true
+
+            {
+              echo "CONFIG_KSU=y"
+              echo "CONFIG_KSU_MULTI_MANAGER_SUPPORT=y"
+              echo "# CONFIG_KSU_DEBUG is not set"
+              if [ "${{ inputs.kpm }}" = "true" ]; then
+                echo "CONFIG_KPM=y"
+              else
+                echo "# CONFIG_KPM is not set"
+              fi
+              if [ "${{ inputs.hook_mode }}" = "susfs" ]; then
+                echo "# CONFIG_KSU_MANUAL_HOOK is not set"
+                echo "CONFIG_KSU_SUSFS=y"
+                for o in SUS_PATH SUS_MOUNT SUS_KSTAT SPOOF_UNAME ENABLE_LOG HIDE_KSU_SUSFS_SYMBOLS \
+                         SPOOF_CMDLINE_OR_BOOTCONFIG OPEN_REDIRECT SUS_MAP; do
+                  echo "CONFIG_KSU_SUSFS_${o}=y"
+                done
+              else
+                echo "# CONFIG_KSU_SUSFS is not set"
+                echo "CONFIG_KSU_MANUAL_HOOK=y"
+              fi
+            } >> "$FRAG"
           fi
 
-          # Prevent build.sh from overwriting OriginSU by cloning cyberc3dr/KernelSU during build
-          sed -i '/cyberc3dr\/KernelSU/d' build.sh 2>/dev/null || true
-
-          {
-            echo "CONFIG_KSU=y"
-            echo "CONFIG_KSU_MULTI_MANAGER_SUPPORT=y"
-            echo "# CONFIG_KSU_DEBUG is not set"
-            if [ "$KPM" = "true" ]; then echo "CONFIG_KPM=y"; else echo "# CONFIG_KPM is not set"; fi
-            if [ "$HOOK_MODE" = "susfs" ]; then
-              echo "# CONFIG_KSU_MANUAL_HOOK is not set"
-              echo "CONFIG_KSU_SUSFS=y"
-              for o in SUS_PATH SUS_MOUNT SUS_KSTAT SPOOF_UNAME ENABLE_LOG HIDE_KSU_SUSFS_SYMBOLS \
-                       SPOOF_CMDLINE_OR_BOOTCONFIG OPEN_REDIRECT SUS_MAP; do
-                echo "CONFIG_KSU_SUSFS_${o}=y"
-              done
-            else
-              echo "# CONFIG_KSU_SUSFS is not set"
-              echo "CONFIG_KSU_MANUAL_HOOK=y"
-            fi
-          } >> "$FRAG"
-
-      - name: Extra features — Baseband Guard, NoMount, Droidspaces
-        if: env.EXTRA_FEATURES == 'true'
-        working-directory: ${{ env.KERNEL_DIR }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash "$GITHUB_WORKSPACE/builder/scripts/extra_features.sh" "$FRAG"
-
-      - name: Inject config fragment into device defconfigs & compile via build.sh
-        working-directory: ${{ env.KERNEL_DIR }}
-        run: |
-          # Append builder fragment to matching defconfigs so build.sh picks them up
-          for cfg in arch/arm64/configs/*${DEVICE}*defconfig arch/arm64/configs/exynos9820*defconfig; do
-            [ -f "$cfg" ] && cat "$FRAG" >> "$cfg"
-          done
-
-          chmod +x build.sh
-          set +e
-          ./build.sh \
-            --model "$DEVICE" \
-            --ksu y \
-            --recovery n \
-            --gpu-max "$GPU_MAX" 2>&1 | tee build.log
-          RC=${PIPESTATUS[0]}
-          set -e
-
-          grep -E -- '^-- (OriginSU|You |SUSFS)' build.log | sort -u || true
-
-          # Locate compiled Image (either build/out/... from build.sh or out/arch/arm64/boot/Image)
-          IMG=$(find build/out out -type f -name "Image" 2>/dev/null | head -n1)
-          if [ "$RC" -ne 0 ] || [ -z "$IMG" ]; then
-            echo "::error::Build failed (exit code $RC). First errors:"
-            grep -nE "error:|Error [0-9]|undefined reference|undefined symbol|\*\*\*" build.log | head -n 40 || true
-            exit 1
+          if [ "${{ inputs.extra_features }}" = "true" ]; then
+            GH_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
+              bash "$RUNNER_TEMP/origin-builder/scripts/extra_features.sh" "$FRAG"
           fi
-          echo "BUILT_IMAGE=$IMG" >> "$GITHUB_ENV"
 
-          # Verify critical options survived in the generated .config
-          DOTCFG=$(find build/out out -maxdepth 4 -type f -name ".config" 2>/dev/null | head -n1)
-          if [ -n "$DOTCFG" ]; then
-            echo "--- effective root configs ($DOTCFG) ---"
-            grep -E '^(# )?CONFIG_(KSU|KPM|BBG|NOMOUNT)' "$DOTCFG" || true
-            for k in CONFIG_KSU=y CONFIG_KSU_SUSFS=y CONFIG_KSU_MANUAL_HOOK=y CONFIG_BBG=y CONFIG_NOMOUNT=y; do
-              grep -qxF "$k" "$FRAG" && ! grep -qxF "$k" "$DOTCFG" && { echo "::error::$k requested but not set"; exit 1; }
+          if [ -s "$FRAG" ]; then
+            echo "--- Applying config fragment ---"
+            cat "$FRAG"
+            MODEL_CODE="${{ steps.cfg.outputs.model_code }}"
+            for cfg in arch/arm64/configs/*${MODEL_CODE}*defconfig arch/arm64/configs/exynos9820*defconfig; do
+              [ -f "$cfg" ] && cat "$FRAG" >> "$cfg"
             done
           fi
 
-      - name: Upload build log (even on failure)
-        if: always()
+      - name: Build kernel
+        run: |
+          chmod +x build.sh
+          ./build.sh \
+            --model "${{ steps.cfg.outputs.model_code }}" \
+            --ksu "${{ steps.cfg.outputs.include_ksu }}" \
+            --recovery "${{ inputs.recovery }}" \
+            --gpu-max "${{ inputs.gpu_max }}"
+
+      - name: ccache stats after build
+        run: ccache -s
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: build-log-${{ matrix.device }}
+          name: ${{ steps.cfg.outputs.effective_root }}-${{ steps.cfg.outputs.originsu_tag }}-${{ inputs.hook_mode }}-kernel-${{ steps.cfg.outputs.model_code }}-rec${{ inputs.recovery }}-gpu${{ inputs.gpu_max }}
           path: |
-            ${{ env.KERNEL_DIR }}/build.log
-            ${{ env.KERNEL_DIR }}/build/out/**/.config
-            ${{ env.KERNEL_DIR }}/out/.config
-          if-no-files-found: ignore
-
-      - name: Package flashable zip
-        run: |
-          mkdir -p dist
-          if [ "$ROOT" = "originsu" ]; then
-            FLAVOR="OriginSU-${ORIGINSU_TAG}-${HOOK_MODE}"
-          else
-            FLAVOR="RKSU-control"
-          fi
-          SUS_VER=$(grep -m1 '#define SUSFS_VERSION' "$KERNEL_DIR/include/linux/susfs.h" 2>/dev/null | cut -d'"' -f2 || true)
-          if [ "$HOOK_MODE" = "susfs" ] && [ -n "$SUS_VER" ]; then
-            FLAVOR="${FLAVOR}-${SUS_VER}"
-          fi
-          FLAVOR="${FLAVOR}-gpu${GPU_MAX}"
-          ZIP="exynos9820-${DEVICE}-${FLAVOR}$([ "$EXTRA_FEATURES" = true ] && echo -extras)-$(date +%Y%m%d).zip"
-
-          # Prefer build.sh's native flashable zip (includes dtb.img/dtbo.img for GPU OC tables)
-          NATIVE_ZIP=$(find "$KERNEL_DIR/build/out" -type f -path "*/zip/*.zip" 2>/dev/null | head -n1)
-          if [ -n "$NATIVE_ZIP" ]; then
-            cp "$NATIVE_ZIP" "dist/$ZIP"
-          else
-            git clone --depth=1 "$AK3_REPO" AnyKernel3
-            rm -rf AnyKernel3/.git AnyKernel3/.github
-            cp "$KERNEL_DIR/$BUILT_IMAGE" AnyKernel3/Image
-            DTB=$(find "$KERNEL_DIR/build/out" "$KERNEL_DIR/out" -type f -name "dtb.img" 2>/dev/null | head -n1)
-            DTBO=$(find "$KERNEL_DIR/build/out" "$KERNEL_DIR/out" -type f -name "dtbo.img" 2>/dev/null | head -n1)
-            [ -n "$DTB" ] && cp "$DTB" AnyKernel3/dtb
-            [ -n "$DTBO" ] && cp "$DTBO" AnyKernel3/dtbo
-            AK=AnyKernel3/anykernel.sh
-            sed -i -E '/^device\.name[0-9]+=/d' "$AK"
-            sed -i -E "s/^do\.devicecheck=.*/do.devicecheck=1\ndevice.name1=${DEVICE}/" "$AK"
-            sed -i -E "s|^kernel\.string=.*|kernel.string=9820_kernel (${DEVICE}) — ${FLAVOR}|" "$AK"
-            (cd AnyKernel3 && zip -rq9 "../dist/$ZIP" ./* -x '*.git*' 'README.md')
-          fi
-
-          (cd dist && sha256sum "$ZIP" > "$ZIP.sha256")
-          DOTCFG=$(find "$KERNEL_DIR/build/out" "$KERNEL_DIR/out" -maxdepth 4 -type f -name ".config" 2>/dev/null | head -n1)
-          [ -n "$DOTCFG" ] && cp "$DOTCFG" "dist/config-${DEVICE}.txt"
-          KREL=$(find "$KERNEL_DIR/build/out" "$KERNEL_DIR/out" -type f -name "kernel.release" -exec cat {} + 2>/dev/null | head -n1)
-          {
-            echo "KERNEL_COMMIT=$KERNEL_COMMIT"
-            echo "KERNEL_RELEASE=\"$KREL\""
-            echo "SUSFS_VERSION=$SUS_VER"
-            echo "TOOLCHAIN=\"$TOOLCHAIN\""
-          } > "dist/info-${DEVICE}.txt"
-
-      - name: Upload flashable zip
-        uses: actions/upload-artifact@v4
-        with:
-          name: FLASH-unzip-first-${{ matrix.device }}
-          path: dist/*.zip
-          compression-level: 0
-
-      - name: Upload checksums, config, info
-        uses: actions/upload-artifact@v4
-        with:
-          name: info-${{ matrix.device }}
-          path: |
-            dist/*.sha256
-            dist/config-*.txt
-            dist/info-*.txt
-
-  # ------------------------------------------------------------------
-  # 3) Publish the GitHub Release
-  # ------------------------------------------------------------------
-  release:
-    needs: [check, build]
-    if: >-
-      !cancelled() && needs.check.outputs.build == 'true' &&
-      (github.event_name == 'schedule' || inputs.publish)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TAG: originsu-${{ needs.check.outputs.tag }}
-      ORIGINSU_TAG: ${{ needs.check.outputs.tag }}
-      KERNEL_BRANCH: ${{ needs.check.outputs.branch }}
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          pattern: "{FLASH-unzip-first-*,info-*}"
-          merge-multiple: true
-
-      - name: Write release notes
-        run: |
-          ls dist/*.zip >/dev/null 2>&1 || { echo "::error::No zip was built"; exit 1; }
-          source "$(ls dist/info-*.txt | head -1)"
-          DEVROWS=""
-          for z in $(ls dist/*.zip | sort); do
-            b=$(basename "$z"); dev=$(echo "$b" | sed -nE 's/^exynos9820-([a-z0-9]+)-.*/\1/p')
-            case "$dev" in
-              beyond0lte) m="Galaxy S10e";; beyond0lteks) m="Galaxy S10e (Korea)";;
-              beyond1lte) m="Galaxy S10";; beyond1lteks) m="Galaxy S10 (Korea)";;
-              beyond2lte) m="Galaxy S10+";; beyond2lteks) m="Galaxy S10+ (Korea)";;
-              beyondx) m="Galaxy S10 5G";; beyondxks) m="Galaxy S10 5G (Korea)";;
-              d1) m="Galaxy Note10";; d1xks) m="Galaxy Note10 5G";;
-              d2s) m="Galaxy Note10+";; d2x) m="Galaxy Note10+ 5G";;
-              d2xks) m="Galaxy Note10+ 5G (Korea)";; *) m="$dev";;
-            esac
-            DEVROWS="${DEVROWS}| ${m} | \`${dev}\` | \`${b}\` |"$'\n'
-          done
-          cat > notes.md <<EOF
-          ## Exynos 9820 kernels (9820_kernel base) — OriginSU \`${ORIGINSU_TAG}\`
-
-          | | |
-          |---|---|
-          | OriginSU | [${ORIGINSU_TAG}](https://github.com/samakshkambxj/OriginSU/releases/tag/${ORIGINSU_TAG}) (kernel + manager) |
-          | SuSFS | \`${SUSFS_VERSION:-n/a}\` |
-          | Kernel | \`SewqPL/9820_kernel\` \`${KERNEL_BRANCH}\` @ [\`${KERNEL_COMMIT}\`](https://github.com/SewqPL/9820_kernel/commit/${KERNEL_COMMIT}) |
-          | Kernel version | \`${KERNEL_RELEASE}\` |
-          | Toolchain | ${TOOLCHAIN} |
-          | Build date | $(date -u +%Y-%m-%d) |
-
-          ### Which zip for my device?
-          Flash **only** the zip whose codename matches your phone:
-
-          | Device | Codename | Zip |
-          |---|---|---|
-          ${DEVROWS}
-          > ⚠️ **Community rebuild — test before daily use.** Back up your stock \`boot\` first.
-
-          Flash from TWRP, then install the OriginSU manager from the
-          [OriginSU release page](https://github.com/samakshkambxj/OriginSU/releases/tag/${ORIGINSU_TAG}).
-          EOF
-          sed -i 's/^          //' notes.md
-
-      - name: Create (or replace) the release
-        run: |
-          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag -y 2>/dev/null || true
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --title "Exynos 9820 (9820_kernel) — OriginSU ${ORIGINSU_TAG}" \
-            --notes-file notes.md --latest \
-            dist/*.zip dist/*.sha256 dist/config-*.txt
+            build/out/**/Image
+            build/out/**/boot.img
+            build/out/**/dtb.img
+            build/out/**/dtbo.img
+            build/out/**/zip/*.zip
+          if-no-files-found: warn
