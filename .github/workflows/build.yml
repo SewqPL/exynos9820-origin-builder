@@ -1,24 +1,8 @@
-name: Build Exynos 9820 Kernels (FreeRunner base) with OriginSU
-
-# Kernel: the REAL FreeRunnerKernel source, Project-Matrixx-New/android_kernel_samsung_exynos9820
-# (named in LeDrew2017/FreeRunnerKernel's release notes). Linux 4.14, Galaxy S10 / Note10 / F62.
-# Branch lineage-24.0 = FreeRunner v3.9 (Nov 2026: clone3 / CAP_CHECKPOINT_RESTORE backports; the
-# defconfig still says v3.8-R2 until the dev pushes the bump). It ships KernelSU-Next (git
-# submodule) + SuSFS v2.3.0 already integrated in fs/.
-#
-# NOTE: LeDrew2017/android_kernel_samsung_exynos9820 (used before) is a Dec-2024 mirror of
-# hiratazx's Yuki v3.0 tree, NOT FreeRunner. ProjectMatrixx-exynos9820 is the old org (stops at v3.7).
-#
-# Build is done the way FreeRunner builds it: `make LLVM=1` with clang 21 (official LLVM 21.1.8
-# release), no GNU binutils, no CROSS_COMPILE, config fragments merged with merge_config.sh.
-#
-# root=ksunext builds FreeRunner as-is (control build: it MUST boot, otherwise the problem is the
-# toolchain / packaging, not OriginSU). root=originsu replaces KSU-Next by OriginSU and adapts the
-# tree's KSU-Next hooks with scripts/originsu_hooks_4.14.sh (see that file for why).
+name: Build Exynos 9820 Kernels (9820_kernel base) with OriginSU
 
 on:
   schedule:
-    - cron: "43 4 * * 0"   # Sunday 04:43 UTC
+    - cron: "43 4 * * 0" # Sunday 04:43 UTC
   workflow_dispatch:
     inputs:
       originsu_ref:
@@ -26,29 +10,48 @@ on:
         required: false
         default: ""
       kernel_branch:
-        description: "FreeRunner kernel branch (Project-Matrixx-New/android_kernel_samsung_exynos9820)"
+        description: "Kernel branch (SewqPL/9820_kernel)"
         required: false
-        default: "lineage-24.0"
+        default: "susfsksu"
       device:
         description: "Device to build (all = every device)"
         type: choice
-        options: [all, beyond0lte, beyond1lte, beyond2lte, beyondx, d1, d1x, d2s, d2x, f62]
+        options:
+          - all
+          - beyond0lte
+          - beyond0lteks
+          - beyond1lte
+          - beyond1lteks
+          - beyond2lte
+          - beyond2lteks
+          - beyondx
+          - beyondxks
+          - d1
+          - d1xks
+          - d2s
+          - d2x
+          - d2xks
         default: all
-      root:
-        description: "originsu = OriginSU; ksunext = FreeRunner as-is (control build to validate the CI)"
+      gpu_max:
+        description: "GPU max MHz (OC tables, default: 962)"
         type: choice
-        options: [originsu, ksunext]
+        options: ["100", "156", "200", "260", "325", "377", "433", "572", "598", "650", "676", "702", "754", "806", "858", "910", "962", "1014", "1066", "1092", "1118", "1144"]
+        default: "962"
+      root:
+        description: "originsu = OriginSU; rksu = 9820_kernel native RKSU (control build)"
+        type: choice
+        options: [originsu, rksu]
         default: originsu
       hook_mode:
-        description: "susfs = root + SuSFS (v2.4.0 by default, or in-tree v2.3.0 via susfs_version); manual = root only, SuSFS disabled"
+        description: "susfs = root + SuSFS; manual = root only, SuSFS disabled"
         type: choice
         options: [susfs, manual]
         default: susfs
       susfs_version:
-        description: "SuSFS (susfs mode only): v2.4.0 = upgraded (JackA1ltman 4.14 port), intree = FreeRunner's v2.3.0"
+        description: "SuSFS: intree = 9820_kernel built-in SuSFS; v2.4.0 = apply JackA1ltman 4.14 patch"
         type: choice
-        options: [v2.4.0, intree]
-        default: v2.4.0
+        options: [intree, v2.4.0]
+        default: intree
       extra_features:
         description: "Add Baseband Guard + NoMount + Droidspaces"
         type: boolean
@@ -74,7 +77,7 @@ defaults:
     shell: bash
 
 env:
-  KERNEL_REPO: Project-Matrixx-New/android_kernel_samsung_exynos9820
+  KERNEL_REPO: SewqPL/9820_kernel
   KERNEL_DIR: kernel
   AK3_REPO: https://github.com/LeDrew2017/Anykernel
   LLVM_VERSION: "21.1.8"
@@ -98,12 +101,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          BRANCH="${{ inputs.kernel_branch }}"; BRANCH="${BRANCH:-lineage-24.0}"
+          BRANCH="${{ inputs.kernel_branch }}"; BRANCH="${BRANCH:-susfsksu}"
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
 
           DEV="${{ inputs.device }}"
           if [ -z "$DEV" ] || [ "$DEV" = "all" ]; then
-            echo 'devices=["beyond0lte","beyond1lte","beyond2lte","beyondx","d1","d1x","d2s","d2x","f62"]' >> "$GITHUB_OUTPUT"
+            echo 'devices=["beyond0lte","beyond0lteks","beyond1lte","beyond1lteks","beyond2lte","beyond2lteks","beyondx","beyondxks","d1","d1xks","d2s","d2x","d2xks"]' >> "$GITHUB_OUTPUT"
           else
             echo "devices=[\"$DEV\"]" >> "$GITHUB_OUTPUT"
           fi
@@ -130,23 +133,20 @@ jobs:
   build:
     needs: check
     if: needs.check.outputs.build == 'true'
-    # Pinned: the official LLVM release binaries link against libxml2.so.2 (Ubuntu 24.04),
-    # newer runner images ship a libxml2 with another soname -> ld.lld fails to start.
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
-        # beyond0lte=S10e, beyond1lte=S10, beyond2lte=S10+, beyondx=S10 5G,
-        # d1=Note10, d1x=Note10 5G, d2s=Note10+, d2x=Note10+ 5G, f62=Galaxy F62.
         device: ${{ fromJSON(needs.check.outputs.devices) }}
     env:
       DEVICE: ${{ matrix.device }}
       ORIGINSU_TAG: ${{ needs.check.outputs.tag }}
       KERNEL_BRANCH: ${{ needs.check.outputs.branch }}
+      GPU_MAX: ${{ github.event_name == 'workflow_dispatch' && inputs.gpu_max || '962' }}
       ROOT: ${{ github.event_name == 'workflow_dispatch' && inputs.root || 'originsu' }}
       HOOK_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.hook_mode || 'susfs' }}
-      SUSFS_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.susfs_version || 'v2.4.0' }}
+      SUSFS_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.susfs_version || 'intree' }}
       EXTRA_FEATURES: ${{ github.event_name == 'workflow_dispatch' && inputs.extra_features || 'false' }}
       KPM: ${{ github.event_name == 'workflow_dispatch' && inputs.kpm || 'false' }}
 
@@ -159,40 +159,36 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex zip curl git libssl-dev libelf-dev zstd xz-utils \
-            python3 python-is-python3 cpio unzip libxml2
+          sudo apt-get install -y \
+            bc bison build-essential cpio curl flex git-core \
+            libc6-dev-i386 lib32z1-dev libelf-dev libncurses-dev libssl-dev libxml2 \
+            python3 python-is-python3 rsync unzip wget xz-utils zip zlib1g-dev zstd
 
-      - name: Clone FreeRunner kernel (with its submodules)
+      - name: Clone 9820_kernel (with submodules)
         run: |
           git clone --depth=1 -b "$KERNEL_BRANCH" --recurse-submodules --shallow-submodules \
             "https://github.com/${KERNEL_REPO}.git" "$KERNEL_DIR"
           echo "KERNEL_COMMIT=$(git -C "$KERNEL_DIR" rev-parse --short HEAD)" >> "$GITHUB_ENV"
-          D="$KERNEL_DIR/arch/arm64/configs/exynos9820-${DEVICE}_defconfig"
-          [ -f "$D" ] || { echo "::error::$D missing on $KERNEL_BRANCH"; exit 1; }
-          echo "-- $(grep -m1 CONFIG_LOCALVERSION= "$D")"
+          [ -f "$KERNEL_DIR/build.sh" ] || { echo "::error::build.sh missing on $KERNEL_BRANCH"; exit 1; }
           echo "-- SuSFS in tree: $(grep -m1 '#define SUSFS_VERSION' "$KERNEL_DIR/include/linux/susfs.h" 2>/dev/null || echo none)"
 
-      - name: Download LLVM ${{ env.LLVM_VERSION }} (same major as FreeRunner's clang-21)
+      - name: Download LLVM ${{ env.LLVM_VERSION }}
         run: |
           F="LLVM-${LLVM_VERSION}-Linux-X64"
           curl -fL --retry 5 --retry-all-errors -o /tmp/llvm.tar.xz \
             "https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/${F}.tar.xz"
           mkdir -p "$HOME/llvm" && tar -C "$HOME/llvm" --strip-components=1 -xf /tmp/llvm.tar.xz && rm -f /tmp/llvm.tar.xz
           echo "$HOME/llvm/bin" >> "$GITHUB_PATH"
-          # Fail here (not 10 min into the build) if a tool can't start (missing shared lib...)
           for t in clang ld.lld llvm-ar llvm-nm llvm-objcopy llvm-objdump llvm-strip; do
             "$HOME/llvm/bin/$t" --version >/dev/null || { echo "::error::$t does not run"; ldd "$HOME/llvm/bin/$t" | grep 'not found'; exit 1; }
           done
           echo "TOOLCHAIN=$("$HOME/llvm/bin/clang" --version | head -n1)" >> "$GITHUB_ENV"
 
-      - name: Kernel tweaks (no -dirty suffix)
+      - name: Kernel tweaks (no -dirty suffix + BBR fragment)
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
           sed -i "s/printf '%s' -dirty/:/g" scripts/setlocalversion 2>/dev/null || true
-          : > "$RUNNER_TEMP/builder.config"     # config fragment filled by the next steps
-          # TCP BBR (Google): built in and default congestion control. The stock defconfig only
-          # has BIC (default)/CUBIC/Westwood/HTCP. CUBIC stays available:
-          #   sysctl -w net.ipv4.tcp_congestion_control=cubic
+          : > "$RUNNER_TEMP/builder.config"
           cat >> "$RUNNER_TEMP/builder.config" <<'EOF'
           CONFIG_TCP_CONG_BBR=y
           CONFIG_DEFAULT_BBR=y
@@ -201,29 +197,34 @@ jobs:
           sed -i 's/^ *//' "$RUNNER_TEMP/builder.config"
           echo "FRAG=$RUNNER_TEMP/builder.config" >> "$GITHUB_ENV"
 
-      - name: Integrate OriginSU (replacing KernelSU-Next)
-        if: env.ROOT == 'originsu'
+      - name: Setup Root (OriginSU or RKSU control)
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
-          # 1) Drop KSU-Next (submodule) and set up OriginSU (./KernelSU + drivers/kernelsu symlink)
-          rm -rf KernelSU-Next KernelSU drivers/kernelsu
+          # Remove any pre-existing KSU directory (both lowercase and 9820_kernel's capitalized drivers/KernelSU)
+          rm -rf KernelSU-Next KernelSU drivers/kernelsu drivers/KernelSU
 
-          # 1b) Optional SuSFS upgrade (in-tree v2.3.0 -> v2.4.0), before OriginSU and the hooks
-          if [ "$HOOK_MODE" = "susfs" ] && [ "$SUSFS_VERSION" = "v2.4.0" ]; then
-            bash "$GITHUB_WORKSPACE/builder/scripts/susfs_v2.4.sh" "$GITHUB_WORKSPACE/builder/scripts"
+          if [ "$ROOT" = "rksu" ]; then
+            curl -LSs --fail --retry 3 \
+              "https://raw.githubusercontent.com/cyberc3dr/KernelSU/susfs-rksu-master/kernel/setup.sh" \
+              | bash -s susfs-rksu-master
+          else
+            if [ "$HOOK_MODE" = "susfs" ] && [ "$SUSFS_VERSION" = "v2.4.0" ]; then
+              bash "$GITHUB_WORKSPACE/builder/scripts/susfs_v2.4.sh" "$GITHUB_WORKSPACE/builder/scripts"
+            fi
+
+            curl -LSs --fail --retry 3 \
+              "https://raw.githubusercontent.com/samakshkambxj/OriginSU/main/kernel/setup.sh" \
+              | bash -s "$ORIGINSU_TAG"
+            [ -e drivers/kernelsu/Kconfig ] || { echo "::error::drivers/kernelsu missing after setup.sh"; exit 1; }
+            sed -i 's/\$(KSU_COMMIT_SHA)-dirty/$(KSU_COMMIT_SHA)/' KernelSU/kernel/Kbuild 2>/dev/null || true
+
+            bash "$GITHUB_WORKSPACE/builder/scripts/originsu_compat_4.14.sh"
+            bash "$GITHUB_WORKSPACE/builder/scripts/originsu_hooks_4.14.sh"
           fi
 
-          curl -LSs --fail --retry 3 https://raw.githubusercontent.com/samakshkambxj/OriginSU/main/kernel/setup.sh \
-            | bash -s "$ORIGINSU_TAG"
-          [ -e drivers/kernelsu/Kconfig ] || { echo "::error::drivers/kernelsu missing after setup.sh"; exit 1; }
-          sed -i 's/\$(KSU_COMMIT_SHA)-dirty/$(KSU_COMMIT_SHA)/' KernelSU/kernel/Kbuild 2>/dev/null || true
+          # Prevent build.sh from overwriting OriginSU by cloning cyberc3dr/KernelSU during build
+          sed -i '/cyberc3dr\/KernelSU/d' build.sh 2>/dev/null || true
 
-          # 2) OriginSU source compat for 4.14 + adapt the tree's KSU-Next hooks to OriginSU
-          bash "$GITHUB_WORKSPACE/builder/scripts/originsu_compat_4.14.sh"
-          bash "$GITHUB_WORKSPACE/builder/scripts/originsu_hooks_4.14.sh"
-
-          # 3) Config. The hook method is a Kconfig choice whose default (tracepoint) is GKI-only,
-          #    so one of KSU_SUSFS / KSU_MANUAL_HOOK must be selected explicitly.
           {
             echo "CONFIG_KSU=y"
             echo "CONFIG_KSU_MULTI_MANAGER_SUPPORT=y"
@@ -249,38 +250,43 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash "$GITHUB_WORKSPACE/builder/scripts/extra_features.sh" "$FRAG"
 
-      - name: Configure (defconfig + fragment, as FreeRunner's build.sh)
+      - name: Inject config fragment into device defconfigs & compile via build.sh
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
-          make O=out ARCH=arm64 LLVM=1 "exynos9820-${DEVICE}_defconfig"
-          if [ -s "$FRAG" ]; then
-            echo "--- fragment ---"; cat "$FRAG"
-            ARCH=arm64 scripts/kconfig/merge_config.sh -O out out/.config "$FRAG"
-            make O=out ARCH=arm64 LLVM=1 olddefconfig
-            # Fail early if a requested option did not stick (missing dependency, typo...)
-            MISS=0
-            while read -r l; do
-              case "$l" in CONFIG_*=*) grep -qxF "$l" out/.config || { echo "::warning::not applied: $l"; MISS=1; };; esac
-            done < "$FRAG"
-            for k in CONFIG_KSU=y CONFIG_KSU_SUSFS=y CONFIG_KSU_MANUAL_HOOK=y CONFIG_BBG=y CONFIG_NOMOUNT=y; do
-              grep -qxF "$k" "$FRAG" && ! grep -qxF "$k" out/.config && { echo "::error::$k requested but not set"; exit 1; }
-            done
-          fi
-          echo "--- effective root configs ---"
-          grep -E '^(# )?CONFIG_(KSU|KPM|BBG|NOMOUNT)' out/.config || true
+          # Append builder fragment to matching defconfigs so build.sh picks them up
+          for cfg in arch/arm64/configs/*${DEVICE}*defconfig arch/arm64/configs/exynos9820*defconfig; do
+            [ -f "$cfg" ] && cat "$FRAG" >> "$cfg"
+          done
 
-      - name: Compile the kernel
-        working-directory: ${{ env.KERNEL_DIR }}
-        run: |
+          chmod +x build.sh
           set +e
-          make -j"$(nproc --all)" O=out ARCH=arm64 LLVM=1 2>&1 | tee build.log
+          ./build.sh \
+            --model "$DEVICE" \
+            --ksu y \
+            --recovery n \
+            --gpu-max "$GPU_MAX" 2>&1 | tee build.log
           RC=${PIPESTATUS[0]}
           set -e
+
           grep -E -- '^-- (OriginSU|You |SUSFS)' build.log | sort -u || true
-          if [ "$RC" -ne 0 ] || [ ! -f out/arch/arm64/boot/Image ]; then
-            echo "::error::Build failed (make exit code $RC). First errors:"
+
+          # Locate compiled Image (either build/out/... from build.sh or out/arch/arm64/boot/Image)
+          IMG=$(find build/out out -type f -name "Image" 2>/dev/null | head -n1)
+          if [ "$RC" -ne 0 ] || [ -z "$IMG" ]; then
+            echo "::error::Build failed (exit code $RC). First errors:"
             grep -nE "error:|Error [0-9]|undefined reference|undefined symbol|\*\*\*" build.log | head -n 40 || true
             exit 1
+          fi
+          echo "BUILT_IMAGE=$IMG" >> "$GITHUB_ENV"
+
+          # Verify critical options survived in the generated .config
+          DOTCFG=$(find build/out out -maxdepth 4 -type f -name ".config" 2>/dev/null | head -n1)
+          if [ -n "$DOTCFG" ]; then
+            echo "--- effective root configs ($DOTCFG) ---"
+            grep -E '^(# )?CONFIG_(KSU|KPM|BBG|NOMOUNT)' "$DOTCFG" || true
+            for k in CONFIG_KSU=y CONFIG_KSU_SUSFS=y CONFIG_KSU_MANUAL_HOOK=y CONFIG_BBG=y CONFIG_NOMOUNT=y; do
+              grep -qxF "$k" "$FRAG" && ! grep -qxF "$k" "$DOTCFG" && { echo "::error::$k requested but not set"; exit 1; }
+            done
           fi
 
       - name: Upload build log (even on failure)
@@ -290,43 +296,55 @@ jobs:
           name: build-log-${{ matrix.device }}
           path: |
             ${{ env.KERNEL_DIR }}/build.log
+            ${{ env.KERNEL_DIR }}/build/out/**/.config
             ${{ env.KERNEL_DIR }}/out/.config
           if-no-files-found: ignore
 
-      - name: Package with AnyKernel3
+      - name: Package flashable zip
         run: |
-          git clone --depth=1 "$AK3_REPO" AnyKernel3
-          rm -rf AnyKernel3/.git AnyKernel3/.github
-          cp "$KERNEL_DIR/out/arch/arm64/boot/Image" AnyKernel3/Image
-          AK=AnyKernel3/anykernel.sh
-          case "$DEVICE" in
-            beyond0lte) MODEL="Galaxy S10e";; beyond1lte) MODEL="Galaxy S10";; beyond2lte) MODEL="Galaxy S10+";;
-            beyondx) MODEL="Galaxy S10 5G";; d1) MODEL="Galaxy Note10";; d1x) MODEL="Galaxy Note10 5G";;
-            d2s) MODEL="Galaxy Note10+";; d2x) MODEL="Galaxy Note10+ 5G";; f62) MODEL="Galaxy F62";; *) MODEL="$DEVICE";;
-          esac
-          if [ "$ROOT" = "originsu" ]; then FLAVOR="OriginSU-${ORIGINSU_TAG}-${HOOK_MODE}"; else FLAVOR="KSUNext-control"; fi
-          if [ "$ROOT" = "originsu" ] && [ "$HOOK_MODE" = "susfs" ]; then
-            FLAVOR="${FLAVOR}-$(grep -m1 '#define SUSFS_VERSION' "$KERNEL_DIR/include/linux/susfs.h" | cut -d'"' -f2)"
+          mkdir -p dist
+          if [ "$ROOT" = "originsu" ]; then
+            FLAVOR="OriginSU-${ORIGINSU_TAG}-${HOOK_MODE}"
+          else
+            FLAVOR="RKSU-control"
           fi
-          sed -i -E '/^device\.name[0-9]+=/d' "$AK"
-          sed -i -E "s/^do\.devicecheck=.*/do.devicecheck=1\ndevice.name1=${DEVICE}/" "$AK"
-          sed -i -E "s|^kernel\.string=.*|kernel.string=FreeRunner ${MODEL} (${DEVICE}) — ${FLAVOR}|" "$AK"
+          SUS_VER=$(grep -m1 '#define SUSFS_VERSION' "$KERNEL_DIR/include/linux/susfs.h" 2>/dev/null | cut -d'"' -f2 || true)
+          if [ "$HOOK_MODE" = "susfs" ] && [ -n "$SUS_VER" ]; then
+            FLAVOR="${FLAVOR}-${SUS_VER}"
+          fi
+          FLAVOR="${FLAVOR}-gpu${GPU_MAX}"
+          ZIP="exynos9820-${DEVICE}-${FLAVOR}$([ "$EXTRA_FEATURES" = true ] && echo -extras)-$(date +%Y%m%d).zip"
 
-          KREL=$(cat "$KERNEL_DIR/out/include/config/kernel.release" 2>/dev/null)
-          ZIP="exynos9820-${DEVICE}-${FLAVOR}$( [ "$EXTRA_FEATURES" = true ] && echo -extras)-$(date +%Y%m%d).zip"
-          (cd AnyKernel3 && zip -rq9 "../$ZIP" ./* -x '*.git*' 'README.md')
-          mkdir -p dist && mv "$ZIP" dist/
+          # Prefer build.sh's native flashable zip (includes dtb.img/dtbo.img for GPU OC tables)
+          NATIVE_ZIP=$(find "$KERNEL_DIR/build/out" -type f -path "*/zip/*.zip" 2>/dev/null | head -n1)
+          if [ -n "$NATIVE_ZIP" ]; then
+            cp "$NATIVE_ZIP" "dist/$ZIP"
+          else
+            git clone --depth=1 "$AK3_REPO" AnyKernel3
+            rm -rf AnyKernel3/.git AnyKernel3/.github
+            cp "$KERNEL_DIR/$BUILT_IMAGE" AnyKernel3/Image
+            DTB=$(find "$KERNEL_DIR/build/out" "$KERNEL_DIR/out" -type f -name "dtb.img" 2>/dev/null | head -n1)
+            DTBO=$(find "$KERNEL_DIR/build/out" "$KERNEL_DIR/out" -type f -name "dtbo.img" 2>/dev/null | head -n1)
+            [ -n "$DTB" ] && cp "$DTB" AnyKernel3/dtb
+            [ -n "$DTBO" ] && cp "$DTBO" AnyKernel3/dtbo
+            AK=AnyKernel3/anykernel.sh
+            sed -i -E '/^device\.name[0-9]+=/d' "$AK"
+            sed -i -E "s/^do\.devicecheck=.*/do.devicecheck=1\ndevice.name1=${DEVICE}/" "$AK"
+            sed -i -E "s|^kernel\.string=.*|kernel.string=9820_kernel (${DEVICE}) — ${FLAVOR}|" "$AK"
+            (cd AnyKernel3 && zip -rq9 "../dist/$ZIP" ./* -x '*.git*' 'README.md')
+          fi
+
           (cd dist && sha256sum "$ZIP" > "$ZIP.sha256")
-          cp "$KERNEL_DIR/out/.config" "dist/config-${DEVICE}.txt"
+          DOTCFG=$(find "$KERNEL_DIR/build/out" "$KERNEL_DIR/out" -maxdepth 4 -type f -name ".config" 2>/dev/null | head -n1)
+          [ -n "$DOTCFG" ] && cp "$DOTCFG" "dist/config-${DEVICE}.txt"
+          KREL=$(find "$KERNEL_DIR/build/out" "$KERNEL_DIR/out" -type f -name "kernel.release" -exec cat {} + 2>/dev/null | head -n1)
           {
             echo "KERNEL_COMMIT=$KERNEL_COMMIT"
             echo "KERNEL_RELEASE=\"$KREL\""
-            echo "SUSFS_VERSION=$(grep -m1 '#define SUSFS_VERSION' "$KERNEL_DIR/include/linux/susfs.h" 2>/dev/null | cut -d'"' -f2)"
+            echo "SUSFS_VERSION=$SUS_VER"
             echo "TOOLCHAIN=\"$TOOLCHAIN\""
           } > "dist/info-${DEVICE}.txt"
 
-      # GitHub always wraps an artifact in a zip on download. The flashable zip gets its own
-      # artifact: download it, unzip it once, and flash the zip found inside (has META-INF).
       - name: Upload flashable zip
         uses: actions/upload-artifact@v4
         with:
@@ -374,20 +392,24 @@ jobs:
           for z in $(ls dist/*.zip | sort); do
             b=$(basename "$z"); dev=$(echo "$b" | sed -nE 's/^exynos9820-([a-z0-9]+)-.*/\1/p')
             case "$dev" in
-              beyond0lte) m="Galaxy S10e";; beyond1lte) m="Galaxy S10";; beyond2lte) m="Galaxy S10+";;
-              beyondx) m="Galaxy S10 5G";; d1) m="Galaxy Note10";; d1x) m="Galaxy Note10 5G";;
-              d2s) m="Galaxy Note10+";; d2x) m="Galaxy Note10+ 5G";; f62) m="Galaxy F62";; *) m="$dev";;
+              beyond0lte) m="Galaxy S10e";; beyond0lteks) m="Galaxy S10e (Korea)";;
+              beyond1lte) m="Galaxy S10";; beyond1lteks) m="Galaxy S10 (Korea)";;
+              beyond2lte) m="Galaxy S10+";; beyond2lteks) m="Galaxy S10+ (Korea)";;
+              beyondx) m="Galaxy S10 5G";; beyondxks) m="Galaxy S10 5G (Korea)";;
+              d1) m="Galaxy Note10";; d1xks) m="Galaxy Note10 5G";;
+              d2s) m="Galaxy Note10+";; d2x) m="Galaxy Note10+ 5G";;
+              d2xks) m="Galaxy Note10+ 5G (Korea)";; *) m="$dev";;
             esac
             DEVROWS="${DEVROWS}| ${m} | \`${dev}\` | \`${b}\` |"$'\n'
           done
           cat > notes.md <<EOF
-          ## Exynos 9820 kernels (FreeRunner base) — OriginSU \`${ORIGINSU_TAG}\`
+          ## Exynos 9820 kernels (9820_kernel base) — OriginSU \`${ORIGINSU_TAG}\`
 
           | | |
           |---|---|
           | OriginSU | [${ORIGINSU_TAG}](https://github.com/samakshkambxj/OriginSU/releases/tag/${ORIGINSU_TAG}) (kernel + manager) |
-          | SuSFS | \`${SUSFS_VERSION:-n/a}\` (FreeRunner in-tree) |
-          | Kernel | FreeRunner \`${KERNEL_BRANCH}\` @ [\`${KERNEL_COMMIT}\`](https://github.com/Project-Matrixx-New/android_kernel_samsung_exynos9820/commit/${KERNEL_COMMIT}) |
+          | SuSFS | \`${SUSFS_VERSION:-n/a}\` |
+          | Kernel | \`SewqPL/9820_kernel\` \`${KERNEL_BRANCH}\` @ [\`${KERNEL_COMMIT}\`](https://github.com/SewqPL/9820_kernel/commit/${KERNEL_COMMIT}) |
           | Kernel version | \`${KERNEL_RELEASE}\` |
           | Toolchain | ${TOOLCHAIN} |
           | Build date | $(date -u +%Y-%m-%d) |
@@ -409,6 +431,6 @@ jobs:
         run: |
           gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag -y 2>/dev/null || true
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --title "Exynos 9820 (FreeRunner) — OriginSU ${ORIGINSU_TAG}" \
+            --title "Exynos 9820 (9820_kernel) — OriginSU ${ORIGINSU_TAG}" \
             --notes-file notes.md --latest \
             dist/*.zip dist/*.sha256 dist/config-*.txt
